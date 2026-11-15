@@ -1,0 +1,46 @@
+# Starts Charm & Click's posting on the minute. GitHub often starts scheduled runs late, so this wakes up about
+# 40 minutes early (twice, in case one is dropped), waits until 1:00, 7:00 or 9:00 pm Bangladesh time
+# (07:00, 13:00, 15:00 UTC), then starts the "Post to Facebook and Instagram" workflow in the private studio copy.
+name: Start posting on time
+on:
+  schedule:
+    - cron: '17 6 * * *'
+    - cron: '37 6 * * *'
+    - cron: '17 12 * * *'
+    - cron: '37 12 * * *'
+    - cron: '17 14 * * *'
+    - cron: '37 14 * * *'
+  workflow_dispatch:
+    inputs:
+      now:
+        description: 'Start posting right now (posts whatever is due)'
+        type: boolean
+        default: false
+concurrency:
+  group: timer
+  cancel-in-progress: false
+jobs:
+  wait-and-start:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - name: Wait for the posting time, then start posting
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          STUDIO: ${{ vars.STUDIO_REPO || 'charm-and-click/studio' }}
+        run: |
+          now=$(date -u +%s)
+          target=""
+          if [ "${{ inputs.now }}" = "true" ]; then gh workflow run post.yml -R "$STUDIO"; echo "Posting started now."; exit 0; fi
+          for hm in 07:00 13:00 15:00; do
+            t=$(date -u -d "today $hm" +%s)
+            if [ "$t" -ge $((now - 1500)) ] && [ "$t" -le $((now + 4200)) ]; then target=$t; fi
+          done
+          if [ -z "$target" ]; then echo "No posting time near now."; exit 0; fi
+          wait=$((target - now + 15))
+          if [ "$wait" -gt 0 ]; then echo "Waiting $wait seconds for $(date -u -d @$target +%H:%M) UTC"; sleep "$wait"; fi
+          since=$(date -u -d "@$((target - 300))" +%Y-%m-%dT%H:%M:%SZ)
+          started=$(gh run list -R "$STUDIO" --workflow post.yml --event workflow_dispatch --limit 20 --json createdAt --jq "[.[] | select(.createdAt >= \"$since\")] | length")
+          if [ "$started" != "0" ]; then echo "Posting already started for this time."; exit 0; fi
+          gh workflow run post.yml -R "$STUDIO"
+          echo "Posting started at $(date -u +%H:%M:%S) UTC"
